@@ -42,7 +42,7 @@ test('отмена не записывает результат даже есл�
   const controller = new AbortController();
   await assert.rejects(beginLogin({
     login: async () => { controller.abort(); return { type: 'oauth', access: 'a', refresh: 'r', accountId: 'account', expires: Date.now() + 3600000 }; },
-    credentials: credentialStore(db, 'account'), interaction: { signal: controller.signal }, 
+    credentials: credentialStore(db, 'account'), interaction: { signal: controller.signal },
   }));
   assert.equal(db.records.size, 0);
 });
