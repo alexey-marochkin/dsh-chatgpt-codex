@@ -26,10 +26,10 @@
 Для CLI/Web с профилем `web`:
 
 ```sh
-npx --yes @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add "git+https://github.com/alexey-marochkin/dsh-chatgpt-codex.git#d8ad6dbeb38af254621025caee7d2b6510ab7129"
+npx --yes @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add dsh-chatgpt-codex@0.6.3
 ```
 
-Команда запускает CLI через npm и устанавливает плагин из фиксированного коммита GitHub. Затем перезапустите профиль. Для Desktop используйте установку через Discover: его профиль управляется самим приложением.
+[Пакет опубликован в npm](https://www.npmjs.com/package/dsh-chatgpt-codex). Команда запускает CLI через npm и устанавливает точную версию плагина из реестра. Затем перезапустите профиль. Для Desktop используйте установку через Discover: его профиль управляется самим приложением.
 
 ## Возможности
 
