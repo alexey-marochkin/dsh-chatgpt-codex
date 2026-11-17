@@ -21,6 +21,16 @@
 
 Индекс фиксирует коммит установки. Desktop использует собственный управляемый профиль, а не профиль `web`.
 
+## Установка через CLI (npx)
+
+Для CLI/Web с профилем `web`:
+
+```sh
+npx --yes @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add "git+https://github.com/alexey-marochkin/dsh-chatgpt-codex.git#d8ad6dbeb38af254621025caee7d2b6510ab7129"
+```
+
+Команда запускает CLI через npm и устанавливает плагин из фиксированного коммита GitHub. Затем перезапустите профиль. Для Desktop используйте установку через Discover: его профиль управляется самим приложением.
+
 ## Возможности
 
 - Вход ChatGPT и модели, доступные аккаунту и встроенному адаптеру DSH.
@@ -33,6 +43,7 @@
 
 ![Подключение и лимиты](https://devos.aicent.ru/dsh-plugins/assets/chatgpt-settings.png)
 ![Доступные сбросы](https://devos.aicent.ru/dsh-plugins/assets/chatgpt-resets.png)
+![История сбросов](https://devos.aicent.ru/dsh-plugins/assets/chatgpt-history.png)
 
 ## Данные и ограничения
 
