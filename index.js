@@ -1,6 +1,7 @@
 import { LlmAdapter, createUserMessage, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { generateImage } from './images.js';
+import { transcribeDictation } from './dictation.js';
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai';
 import { credentialKey } from '@deepseek-ai/dsh-credentials';
 import { createModels } from '@earendil-works/pi-ai/models';
@@ -42,12 +43,18 @@ export async function apply(ctx, config) {
   const models = createModels({ credentials });
   models.setProvider(provider);
   // Получает токен через pi-ai и сверяет аккаунт после возможного обновления авторизации.
-  async function getImageGrant(signal) {
+  async function getSubscriptionGrant(signal) {
     if (!configured()) return;
     const auth = await models.getAuth('openai-codex', { signal });
     const grant = await credentials.read();
     if (grant?.access && grant.access === auth?.auth?.apiKey) return grant;
   }
+  ctx.inject(['speechToText'], scope => {
+    scope.effect(() => scope.speechToText.register({
+      info: { id: 'chatgpt-codex-dictation', name: 'Диктовка Codex по подписке · OpenAI', location: 'cloud', languages: ['auto', 'ru', 'en'] },
+      transcribe: (input, signal) => transcribeDictation(input, signal, getSubscriptionGrant)
+    }));
+  });
   ctx.inject(['tools', 'attachments'], scope => {
     // Отображает изображение в обычном вызове и передаёт его в диалог при вложенном вызове.
     const content = ({ attachment, sourcePath, filename }) => [
@@ -71,7 +78,7 @@ export async function apply(ctx, config) {
       timeoutMs: 300000,
       isConcurrencySafe: () => false,
       async execute(args, exec) {
-        const attachment = await generateImage(args, exec, { getGrant: getImageGrant, attachments: scope.attachments });
+        const attachment = await generateImage(args, exec, { getGrant: getSubscriptionGrant, attachments: scope.attachments });
         const hostPath = scope.attachments.imageHostPath?.(attachment);
         const sourcePath = hostPath && scope.get('fs')?.processPathFromHostPath(hostPath);
         const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[attachment.mediaType];
