@@ -4,14 +4,14 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 // Монтирует регистрацию карточки с управляемым состоянием, не обращаясь к аккаунту пользователя.
-function renderCard(status, hasCredential) {
+function renderCard(status, hasCredential, extra = {}) {
   let plugin;
   let registration;
   let component;
   let stateIndex = 0;
   const react = {
     createElement: (type, props, ...children) => ({ type, props, children }),
-    useState: initial => [stateIndex++ === 0 ? { status, modelCount: 1, hasCredential } : stateIndex === 4 ? {} : initial, () => {}],
+    useState: initial => [stateIndex++ === 0 ? { status, modelCount: 1, hasCredential, ...extra } : stateIndex === 4 ? {} : initial, () => {}],
     useRef: () => ({ current: null }),
     useEffect() {},
     useLayoutEffect() {}
@@ -90,8 +90,8 @@ test('индикатор монтируется только для моделе
   vm.runInNewContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), {
     window: { __ModuleLoader__: { load: entry => { plugin = entry.factory(name => name === 'react' ? react : {}); } } }
   });
-  const scope = { modelDirectories: {}, slots: { inject: (_, fn) => fn(), register: (options, component) => { dock = component; assert.equal(options.name, 'conversation.composer.dock'); } } };
-  plugin.apply({ effect() {}, slots: { inject() {} }, inject: (_, fn) => fn(scope) });
+  const scope = { modelDirectories: {}, slots: { inject: (_, fn) => fn(), register: (options, component) => { if (options.name === 'conversation.composer.dock') dock = component; } } };
+  plugin.apply({ effect() {}, slots: { inject() {} }, inject: (deps, fn) => deps.includes('modelDirectories') && fn(scope) });
   const props = { directory: { getSnapshot: () => ({ current }) }, send() {}, language: 'ru' };
   assert(dock(props));
   for (const provider of ['deepseek', 'openai-codex', 'openai']) {
@@ -141,7 +141,7 @@ function renderQuota(state, settings) {
     window: { __ModuleLoader__: { load: entry => { plugin = entry.factory(name => name === 'react' ? react : name === 'react-dom' ? { createPortal: child => child } : { Tooltip: 'tooltip' }); } } }
   });
   const scope = { slots: { inject: (_, fn) => fn(), register: (_, component) => { dock = component; } } };
-  plugin.apply({ effect() {}, slots: { inject() {} }, inject: (_, fn) => fn(scope) });
+  plugin.apply({ effect() {}, slots: { inject() {} }, inject: (deps, fn) => deps.includes('modelDirectories') && fn(scope) });
   const props = { directory: { getSnapshot: () => ({ current: { provider: 'chatgpt-codex' } }) }, send() {}, language: 'ru', settings };
   return JSON.stringify(dock(props).type(props));
 }
@@ -161,4 +161,43 @@ test('настройки используют общий вход без вто�
   assert.doesNotMatch(rendered, /общий вход|один вход|share one/);
   assert.match(rendered, /Обновить лимиты/);
   assert.doesNotMatch(rendered, /Подключить лимиты|Отключить лимиты|Войти в лимиты|второй шаг/);
+});
+
+test('индикатор красный строго ниже 20%, но не для неизвестных или устаревших данных', () => {
+  for (const [percent, status, fetchedAt, expected] of [
+    [19.9, 'connected', Date.now(), true], [0, 'connected', Date.now(), true],
+    [20, 'connected', Date.now(), false], [21, 'connected', Date.now(), false],
+    [null, 'connected', Date.now(), false], [10, 'error', Date.now(), false],
+    [10, 'connected', Date.now() - 180000, false]
+  ]) {
+    const tree = renderQuota({ status, fetchedAt, data: { weekly: { remainingPercent: percent }, windows: [], resetsAvailable: null } }, false);
+    assert.equal(tree.includes('dsh-quota-low'), expected);
+  }
+});
+
+test('индикатор жёлтый от 20% до 30%, красный имеет приоритет', () => {
+  for (const [percent, expected] of [[19.9, false], [20, true], [29.9, true], [30, false], [null, false]]) {
+    const tree = renderQuota({ status: 'connected', fetchedAt: Date.now(), data: { weekly: { remainingPercent: percent }, windows: [], resetsAvailable: null } }, false);
+    assert.equal(tree.includes('dsh-quota-warning'), expected);
+    assert.match(tree, /"className":"dsh-quota-pill"/);
+    if (expected) assert.match(tree, /"type":"circle","props":\{"className":"dsh-quota-remaining dsh-quota-warning"/);
+  }
+});
+
+test('полоски подробной панели используют пороги каждого окна и не окрашивают устаревшие данные', () => {
+  for (const [value, status, expired, expected] of [[10, 'connected', false, 'dsh-quota-low'], [20, 'connected', false, 'dsh-quota-warning'], [27, 'connected', false, 'dsh-quota-warning'], [30, 'connected', false, ''], [null, 'connected', false, ''], [10, 'error', false, ''], [10, 'connected', true, '']]) {
+    const tree = JSON.parse(renderQuota({ status, fetchedAt: Date.now(), data: { windows: [{ id: 'short', name: 'Short', seconds: 18000, remainingPercent: value, resetsAt: (Date.now() + (expired ? -1000 : 3600000)) / 1000 }], resetsAvailable: null } }, false));
+    const find = node => !node || typeof node !== 'object' ? undefined : node.type === 'progress' ? node : (Array.isArray(node) ? node : node.children ?? []).map(find).find(Boolean);
+    assert.equal(find(tree).props.className, expected);
+  }
+});
+
+
+test('панель показывает ошибку каталога, неизвестные модели и только доступные скорости', () => {
+  const { rendered } = renderCard('connected', true, { configured:true, speeds:{model:'ultrafast'}, catalog:{source:'cache',fetchedAt:1000,error:'CATALOG_HTTP_503',rows:[{id:'model',supported:true,tiers:['default','priority']},{id:'new-model',supported:false,tiers:['default']}]}});
+  assert.match(rendered, /CATALOG_HTTP_503/);
+  assert.match(rendered, /Нужна поддержка в адаптере DSH/);
+  assert.match(rendered, /"enabled":false/);
+  assert.doesNotMatch(rendered, /"value":"ultrafast"/);
+  assert.match(rendered, /Рассуждение по умолчанию model/);
 });

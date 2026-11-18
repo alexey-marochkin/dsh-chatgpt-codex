@@ -1,6 +1,6 @@
 {
   "name": "dsh-chatgpt-codex",
-  "version": "0.6.3",
+  "version": "0.7.0-local.15",
   "description": "ChatGPT - Codex: подключение подписки ChatGPT в DSH",
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,10 @@
   },
   "files": [
     "index.js",
+    "images.js",
     "core.js",
+    "catalog-cache.js",
+    "reset-warnings.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",
@@ -42,7 +45,8 @@
     "LICENSE-LUCIDE",
     "journal.js",
     "quota.js",
-    "resets.js"
+    "resets.js",
+    "catalog.js"
   ],
   "scripts": {
     "test": "node --test test/*.test.js"
@@ -63,6 +67,7 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.3",
     "@deepseek-ai/dsh-llm-pi-ai": "0.2.2-rc.3",
     "@deepseek-ai/dsh-credentials": "0.2.2-rc.3",
     "@deepseek-ai/dsh-settings": "0.2.2-rc.3",

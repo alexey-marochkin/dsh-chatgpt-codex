@@ -1,3 +1,4 @@
+import { reasoningLevels } from './catalog.js';
 // Адаптирует отдельную запись DSH к хранилищу pi-ai; обновление проходит под блокировкой DSH.
 export function credentialStore(db, key) {
   return {
@@ -21,7 +22,7 @@ export function selectModels(catalog, known) {
   for (const entry of catalog.models) {
     if (entry?.visibility !== 'list' || typeof entry.slug !== 'string') continue;
     const model = known.find(model => model.id === entry.slug);
-    if (model && !result.some(item => item.id === model.id)) result.push({ ...model, name: typeof entry.display_name === 'string' ? entry.display_name : model.name });
+    if (model && !result.some(item => item.id === model.id)) result.push({ ...model, ...(Array.isArray(entry.supported_reasoning_levels) ? { reasoning: reasoningLevels(entry, model).length > 0, thinkingLevelMap: Object.fromEntries(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(level => [level, reasoningLevels(entry, model).includes(level) ? level : null])) } : {}), name: typeof entry.display_name === 'string' ? entry.display_name : model.name });
   }
   return result;
 }

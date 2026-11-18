@@ -3,6 +3,8 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
   const { createPortal } = require('react-dom');
   const { Tooltip } = require('@deepseek-ai/dsh-client-ui-primitives');
   const h = React.createElement;
+  // Выбирает цвет остатка для дуги и полосок; неизвестное значение не окрашивается.
+  function quotaColor(percent) { return Number.isFinite(percent) && percent < 20 ? 'dsh-quota-low' : Number.isFinite(percent) && percent < 30 ? 'dsh-quota-warning' : ''; }
   const labels = {
     ru: { intro: 'Подключите подписку ChatGPT и выберите модель в чате.', login: 'Войти через ChatGPT', logout: 'Отключить', cancel: 'Отменить вход', refresh: 'Обновить модели', waiting: 'Завершите вход в браузере.', manual: 'Если браузер не вернулся в приложение, вставьте итоговый адрес перенаправления.', send: 'Продолжить', connected: 'Подключено. Доступных моделей: ', stored: 'Вход сохранён. Обновите список моделей.', signedOut: 'Подписка не подключена', failed: 'Не удалось завершить операцию. Повторите вход или обновление моделей.', port: 'Порт входа занят. Завершите другую попытку входа и повторите.', loading: 'Подключение…' },
     en: { intro: 'Connect your ChatGPT subscription, then choose a model in chat.', login: 'Sign in with ChatGPT', logout: 'Disconnect', cancel: 'Cancel sign-in', refresh: 'Refresh models', waiting: 'Complete sign-in in your browser.', manual: 'If the browser did not return to the app, paste the final redirect URL.', send: 'Continue', connected: 'Connected. Available models: ', stored: 'Signed in. Refresh the model list.', signedOut: 'Subscription not connected', failed: 'The operation failed. Try signing in or refreshing models again.', port: 'The sign-in port is busy. Finish the other sign-in attempt and retry.', loading: 'Connecting…' }
@@ -12,6 +14,79 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
   function QuotaDock({ directory, send, language }) {
     const selection = React.useSyncExternalStore(callback => directory.subscribe(callback), () => directory.getSnapshot());
     return selection.current?.provider === 'chatgpt-codex' ? h(QuotaPanel, { send, language }) : null;
+  }
+
+  // Использует готовую иконку Lucide Zap (ISC); заливка молнии показывает состояние ускорения.
+  function FastButton({ enabled, disabled, onClick, model, language }) {
+    const hint = language === 'ru' ? 'Fast: ускоренная обработка с повышенным расходом квоты. Не меняет уровень рассуждения. Настройка этой модели общая для чатов.' : 'Fast: accelerated processing with increased quota usage. Does not change reasoning effort. Shared across chats for this model.';
+    return h(Tooltip, { label: hint, side: 'top', delayMs: 200 }, h('button', { type: 'button', className: 'dsh-codex-fast', role: 'switch', 'aria-checked': enabled, 'aria-label': (language === 'ru' ? 'Ускорение ' : 'Acceleration ') + model, disabled, onClick, title: hint },
+      h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: enabled ? 'currentColor' : 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('path', { d: 'M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z' }))));
+  }
+
+  // Ограничивает переключатель выбранной моделью нашего поставщика; смена модели пересоздаёт состояние.
+  function FastMenu({ directory, ...props }) {
+    const state = React.useSyncExternalStore(callback => directory.subscribe(callback), () => directory.getSnapshot());
+    return state.current?.provider === 'chatgpt-codex' ? h(FastMenuControl, { ...props, key: state.current.model, model: state.current.model }) : null;
+  }
+
+  // Читает и сохраняет тот же режим, что в настройках; устаревшие ответы после смены модели игнорируются.
+  function FastMenuControl({ model, send, language, locked, reportFailure }) {
+    const [state, setState] = React.useState(null);
+    const [busy, setBusy] = React.useState(false);
+    const alive = React.useRef(false);
+    const changing = React.useRef(false);
+    const revision = React.useRef(0);
+    React.useEffect(() => {
+      alive.current = true;
+      let timer;
+      const poll = async () => {
+        const started = revision.current;
+        try { const next = await send('status'); if (alive.current && !changing.current && started === revision.current) setState(next); }
+        catch { if (alive.current && !changing.current && started === revision.current) setState(null); }
+        if (alive.current) timer = setTimeout(poll, 1500);
+      };
+      poll();
+      return () => { alive.current = false; clearTimeout(timer); };
+    }, [send]);
+    const row = state?.catalog?.rows.find(item => item.id === model && item.supported);
+    const tier = row?.tiers.includes('priority') ? 'priority' : row?.tiers.includes('fast') ? 'fast' : null;
+    if (!tier || !state?.hasCredential || !state.configured) return null;
+    const enabled = ['priority', 'fast'].includes(state.speeds?.[model]);
+    // Меняет только явно выбранную модель, не отправляя запрос генерации и не меняя рассуждение.
+    async function toggle() {
+      if (locked || changing.current) return;
+      changing.current = true;
+      revision.current++;
+      setBusy(true);
+      try { const next = await send('speed', { model, tier: enabled ? 'default' : tier }); if (alive.current) setState(next); }
+      catch { if (alive.current) reportFailure(language === 'ru' ? 'Не удалось изменить ускорение Codex.' : 'Could not change Codex acceleration.'); }
+      finally { changing.current = false; if (alive.current) setBusy(false); }
+    }
+    return h('div', { className: 'dsh-codex-fast-menu' }, h('span', null, language === 'ru' ? 'Ускорение Codex' : 'Codex acceleration'), h(FastButton, { enabled, disabled: locked || busy, onClick: toggle, model, language }));
+  }
+
+  // Нативная подсказка открывается над таблицей и закрывается по Escape или клику снаружи.
+  function ExperimentalHint({ model, language }) {
+    const id = 'dsh-codex-hint-' + React.useId().replace(/[^a-zA-Z0-9_-]/g, '');
+    const label = language === 'ru' ? 'Экспериментальная поддержка модели' : 'Experimental model support';
+    return h('span', null,
+      h('button', { type: 'button', className: 'dsh-experimental-mark', style: { anchorName: '--' + id }, 'aria-label': label + ' ' + model, 'aria-describedby': id, popovertarget: id }, '⚠︎'),
+      h('span', { id, popover: 'auto', role: 'tooltip', className: 'dsh-experimental-popup', style: { positionAnchor: '--' + id } }, label));
+  }
+
+  // Открывает модальное окно поверх настроек; браузер удерживает фокус и возвращает его при закрытии.
+  function SettingsDialog({ open, title, language, onClose, children }) {
+    const dialog = React.useRef(null);
+    React.useEffect(() => {
+      const element = dialog.current;
+      if (open && !element?.open) element?.showModal();
+      if (!open && element?.open) element.close();
+      return () => { if (element?.open) element.close(); };
+    }, [open]);
+    return h('dialog', { ref: dialog, className: 'dsh-reset-dialog dsh-codex-settings-dialog', 'aria-label': title, onKeyDown: event => { if (event.key === 'Escape') event.stopPropagation(); }, onCancel: event => { event.preventDefault(); event.stopPropagation(); onClose(); } },
+      h('header', null, h('h2', null, title), h('button', { type: 'button', className: 'dsh-reset-close', 'aria-label': language === 'ru' ? 'Закрыть' : 'Close', onClick: onClose }, '×')),
+      children);
   }
 
   // Показывает отдельный список сбросов; первое нажатие лишь запрашивает подтверждение в выбранной строке.
@@ -125,6 +200,7 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
     const [busy, setBusy] = React.useState(false);
     const [position, setPosition] = React.useState({ bottom: 45, right: 16 });
     const [resetsOpen, setResetsOpen] = React.useState(false);
+    const [warnings, setWarnings] = React.useState([]);
     const root = React.useRef(null);
     const panel = React.useRef(null);
     const alive = React.useRef(true);
@@ -136,7 +212,18 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
       const revision = ++generation.current;
       try {
         const result = await send(action, body);
-        if (alive.current && revision === generation.current) setState(result);
+        if (alive.current && revision === generation.current) {
+          setState(result);
+          if (result.status !== 'connected') setWarnings([]);
+          if (!settings && !modelPending && result.status === 'connected') {
+            try {
+              const notice = await send('quota-reset-warnings');
+              if (alive.current && revision === generation.current && notice.warnings?.length) {
+                setWarnings(previous => [...previous.filter(item => item.expiresAt > Date.now()), ...notice.warnings]);
+              }
+            } catch { /* Ошибка проверки сбросов не изменяет успешно полученные лимиты. */ }
+          }
+        }
       } catch {
         if (alive.current && revision === generation.current) setState(previous => ({ ...previous, status: 'error', error: 'QUOTA_FAILED' }));
       }
@@ -210,7 +297,12 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
       h('button', { type: 'button', className: 'dsh-quota-pill', 'aria-haspopup': 'dialog', 'aria-expanded': open, 'aria-label': text('Остаток недельного лимита ChatGPT', 'ChatGPT weekly limit remaining'), onClick: () => { setOpen(!open); if (!open) update('quota'); } },
         h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': true },
           h('circle', { cx: 8, cy: 8, r: 6, fill: 'none', stroke: 'currentColor', strokeWidth: 2, opacity: 0.25 }),
-          percent !== null && h('circle', { cx: 8, cy: 8, r: 6, fill: 'none', stroke: 'currentColor', strokeWidth: 2, pathLength: 100, strokeDasharray: `${percent} 100`, transform: 'rotate(-90 8 8)' })), caption)),
+          percent !== null && h('circle', { className: 'dsh-quota-remaining' + (quotaColor(percent) ? ' ' + quotaColor(percent) : ''), cx: 8, cy: 8, r: 6, fill: 'none', stroke: 'currentColor', strokeWidth: 2, pathLength: 100, strokeDasharray: `${percent} 100`, transform: 'rotate(-90 8 8)' })), caption)),
+      warnings.some(item => item.expiresAt > Date.now()) && h('span', { className: 'dsh-reset-warning', role: 'status' },
+        ...warnings.filter(item => item.expiresAt > Date.now()).map(item => h('span', { key: item.id }, text('Срок действия сброса истекает ', 'A reset expires ') + date(item.expiresAt / 1000))),
+        h('button', { type: 'button', onClick: () => setResetsOpen(true) }, text('Посмотреть сбросы', 'View resets')),
+        h('button', { type: 'button', 'aria-label': text('Закрыть предупреждение', 'Dismiss warning'), onClick: () => setWarnings([]) }, '×')),
+      resetsOpen && createPortal(h(ResetDialog, { send, language, onClose: () => setResetsOpen(false), onChanged: () => { setWarnings([]); return update('quota-refresh'); } }), document.body),
       open && createPortal(h('section', { ref: panel, className: 'dsh-quota-panel', role: 'dialog', 'aria-label': text('Лимиты ChatGPT', 'ChatGPT limits'), style: position },
         h('header', null, h('strong', null, 'ChatGPT', data?.plan ? ` · ${data.plan}` : ''), h('button', { type: 'button', 'aria-label': text('Закрыть', 'Close'), onClick: () => { setOpen(false); root.current?.querySelector('button')?.focus(); } }, '×')),
         h('p', { className: 'dsh-quota-note' }, text('Остаток лимитов Codex в подписке ChatGPT.', 'Remaining Codex limits in your ChatGPT plan.')),
@@ -220,7 +312,7 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
         data && h('div', null,
           ...data.windows.map(item => h('div', { key: item.id, className: 'dsh-quota-window' },
             h('div', null, h('span', null, `${item.name} · ${period(item.seconds)}`), h('strong', null, text('Осталось ', 'Remaining ') + formatPercent(item.remainingPercent))),
-            h('progress', { value: item.remainingPercent, max: 100, 'aria-label': `${item.name} ${period(item.seconds)}` }),
+            h('progress', { className: quotaColor(stale || (item.resetsAt && item.resetsAt * 1000 <= Date.now()) ? null : item.remainingPercent), value: item.remainingPercent, max: 100, 'aria-label': `${item.name} ${period(item.seconds)}` }),
             h('small', null, text('Обновление: ', 'Resets: ') + date(item.resetsAt)))),
           !weekly && h('p', null, text('Недельный лимит сервер не передал.', 'The server did not provide a weekly limit.')),
           data.individual && h('p', null, text('Личный лимит: осталось ', 'Individual limit: remaining ') + formatPercent(data.individual.remainingPercent) + ' · ' + date(data.individual.resetsAt)),
@@ -244,6 +336,8 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
     const [footerTarget, setFooterTarget] = React.useState(null);
     const [actionError, setActionError] = React.useState(null);
     const browserRequested = React.useRef(false);
+    const [catalogOpen, setCatalogOpen] = React.useState(false);
+    const [manualOpen, setManualOpen] = React.useState(false);
     React.useLayoutEffect(() => {
       setBadgeTarget(root.current?.closest('li.jrmgQW_rowCard')?.querySelector('.jrmgQW_rowIdentity') ?? null);
       setFooterTarget(root.current?.closest('.jrmgQW_addPanel, .jrmgQW_rowCard')?.querySelector(':scope > .jrmgQW_editor .jrmgQW_editorActions') ?? null);
@@ -268,13 +362,13 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
     }, [state.status, state.url]);
 
     // Отправляет явное действие пользователя и очищает введённый callback после передачи.
-    async function act(action) {
+    async function act(action, payload) {
       setBusy(true);
       setActionError(null);
       if (action === 'login') browserRequested.current = true;
       if (action === 'cancel') browserRequested.current = false;
       try {
-        const next = await send(action, action === 'answer' ? { value } : undefined);
+        const next = await send(action, action === 'answer' ? { value } : payload);
         setState(next);
         if (action === 'answer') setValue('');
         if (action === 'apply') footerTarget?.querySelector('.jrmgQW_secondaryButton')?.click();
@@ -296,8 +390,27 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
       h('p', { role: 'status', 'aria-live': 'polite' }, message),
       actionError && h('p', { role: 'alert' }, actionError.error === 'SAVE_FAILED' ? (language === 'ru' ? 'Вход сохранён, но не удалось применить настройки: ' : 'Signed in, but settings could not be saved: ') + (actionError.detail ?? 'SAVE_FAILED') : t.failed),
       h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } }, pending ? button('cancel', t.cancel) : hasCredential ? button('logout', t.logout) : button('login', t.login, state.status === 'loading'), !pending && hasCredential && button('refresh', t.refresh)),
+      hasCredential && state.catalog && h('button', { type: 'button', style: { margin: '12px 0' }, 'aria-haspopup': 'dialog', onClick: () => setCatalogOpen(true) }, language === 'ru' ? 'Каталог и режимы моделей' : 'Model catalog and modes'),
+      hasCredential && state.catalog && h(SettingsDialog, { open: catalogOpen, title: language === 'ru' ? 'Каталог и режимы моделей' : 'Model catalog and modes', language, onClose: () => setCatalogOpen(false) },
+        button('refresh', t.refresh, pending),
+        actionError && h('p', { role: 'alert' }, t.failed),
+        h('p', null, (language === 'ru' ? 'Источник: ' : 'Source: ') + ({ network: language === 'ru' ? 'сервер' : 'server', cache: language === 'ru' ? 'кэш' : 'cache', expired: language === 'ru' ? 'кэш истёк' : 'expired cache', none: '—' }[state.catalog.source] ?? '—') + (state.catalog.fetchedAt ? ' · ' + new Date(state.catalog.fetchedAt).toLocaleString(language) : '')),
+        state.catalog.error && h('p', { role: 'status' }, (language === 'ru' ? 'Ошибка обновления: ' : 'Refresh error: ') + state.catalog.error),
+        h('p', null, language === 'ru' ? 'Уровень рассуждения по умолчанию применяется, когда в чате выбран вариант «По умолчанию». Явный выбор в чате важнее. Молния — отдельное ускорение с повышенным расходом квоты.' : 'The default reasoning level applies when the chat uses Default. Explicit chat choices take precedence. Lightning is separate acceleration with increased quota usage.'),
+        h('table', { style: { width: '100%', textAlign: 'left' } },
+          h('thead', null, h('tr', null, h('th', null, language === 'ru' ? 'Модель' : 'Model'), h('th', null, language === 'ru' ? 'Рассуждение по умолчанию / ускорение' : 'Default reasoning / acceleration'))),
+          h('tbody', null, state.catalog.rows.map(row => h('tr', { key: row.id },
+            h('td', { style: { overflowWrap: 'anywhere' } }, row.id, row.experimental && h(ExperimentalHint, { model: row.id, language })),
+            h('td', null, row.supported ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+              h('select', { 'aria-label': (language === 'ru' ? 'Рассуждение по умолчанию ' : 'Default reasoning ') + row.id, disabled: busy || pending || !state.configured, value: row.efforts?.includes(state.reasoningDefaults?.[row.id]) ? state.reasoningDefaults[row.id] : 'default', onChange: event => act('reasoning-default', { model: row.id, tier: event.target.value }) },
+                h('option', { value: 'default' }, language === 'ru' ? 'По умолчанию' : 'Default'),
+                (row.efforts ?? []).map(level => h('option', { key: level, value: level }, language === 'ru' ? ({ minimal: 'Минимальное', low: 'Низкое', medium: 'Среднее', high: 'Высокое', xhigh: 'Очень высокое', max: 'Максимальное' }[level] ?? level) : level))),
+              row.tiers.some(tier => tier === 'priority' || tier === 'fast') && h(FastButton, { enabled: ['priority', 'fast'].includes(state.speeds?.[row.id]), model: row.id, language, disabled: busy || pending || !state.configured, onClick: () => act('speed', { model: row.id, tier: ['priority', 'fast'].includes(state.speeds?.[row.id]) ? 'default' : row.tiers.includes('priority') ? 'priority' : 'fast' }) }))
+
+              : (language === 'ru' ? 'Нужна поддержка в адаптере DSH/pi-ai' : 'Requires DSH/pi-ai adapter support'))))))),
       footerTarget ? createPortal(applyButton, footerTarget) : applyButton,
-      pending && h('details', { style: { marginTop: 12 } }, h('summary', null, t.manual), h('input', { type: 'password', 'aria-label': t.manual, autoComplete: 'off', value, onChange: event => setValue(event.target.value), style: { width: '100%', margin: '8px 0' } }), button('answer', t.send)),
+      pending && h('button', { type: 'button', 'aria-haspopup': 'dialog', onClick: () => setManualOpen(true) }, t.manual),
+      pending && h(SettingsDialog, { open: manualOpen, title: t.manual, language, onClose: () => setManualOpen(false) }, h('input', { type: 'password', 'aria-label': t.manual, autoComplete: 'off', value, onChange: event => setValue(event.target.value), style: { width: '100%', margin: '8px 0' } }), button('answer', t.send)),
       h(QuotaPanel, { send, language, settings: true, modelPending: pending })
     );
   }
@@ -317,6 +430,11 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
         .dsh-quota-anchor { display: inline-flex; }
         .dsh-quota-pill { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-tertiary, #aaa); padding: 2px 6px; font-family: inherit; font-size: var(--dsh-content-font-size-secondary, 13px); white-space: nowrap; cursor: pointer; }
         .dsh-quota-pill:hover { color: var(--dsw-alias-label-primary, #eee); background: var(--dsw-alias-interactive-bg-hover); }
+        .dsh-quota-remaining.dsh-quota-low { color: var(--dsw-alias-state-error-primary, #dc2626); }
+        .dsh-quota-remaining.dsh-quota-warning { color: var(--dsw-alias-state-warning-primary, #b58b00); }
+        .dsh-reset-warning { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; max-width: 100%; padding: 4px 8px; font-size: 12px; color: var(--dsw-alias-label-primary); border: 1px solid var(--dsw-alias-border-standard, #888); border-radius: 6px; }
+        .dsh-reset-warning button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; }
+        .dsh-reset-warning button:focus-visible { outline: 2px solid var(--dsw-alias-label-link, #a99aff); outline-offset: 2px; }
         .dsh-quota-panel { position: fixed; z-index: 1000; box-sizing: border-box; width: 340px; max-width: calc(100vw - 24px); max-height: 70vh; overflow: auto; padding: 18px; border: 1px solid var(--dsw-alias-border-l3, #555); border-radius: 14px; background: var(--dsw-specific-menu, #29292c); color: var(--dsw-alias-label-primary, #eee); backdrop-filter: var(--dsw-menu-backdrop-filter); box-shadow: var(--dsw-elevation-prominent); font-size: 13px; line-height: 1.5; }
         .dsh-quota-panel header, .dsh-quota-window > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
         .dsh-quota-panel header strong { font-size: 16px; }
@@ -328,6 +446,8 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
         .dsh-quota-window { margin: 14px 0; }
         .dsh-quota-window strong { white-space: nowrap; }
         .dsh-quota-window progress { display: block; width: 100%; height: 6px; margin: 7px 0; accent-color: var(--dsw-alias-state-success-primary, #30b861); }
+        .dsh-quota-window progress.dsh-quota-low { accent-color: var(--dsw-alias-state-error-primary, #dc2626); }
+        .dsh-quota-window progress.dsh-quota-warning { accent-color: var(--dsw-alias-state-warning-primary, #b58b00); }
         .dsh-quota-note, .dsh-quota-window small { color: var(--dsw-alias-label-tertiary, #aaa); }
         .dsh-quota-fetched { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-label-tertiary); font-size: 11px; }
         .dsh-quota-panel input { box-sizing: border-box; width: 100%; margin: 8px 0; }
@@ -341,6 +461,18 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
         .dsh-quota-settings button:disabled { opacity: .5; cursor: default; }
         .dsh-reset-summary { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
         .dsh-reset-dialog { box-sizing: border-box; width: 660px; max-width: calc(100vw - 32px); max-height: calc(100vh - 48px); overflow: auto; margin: auto; padding: 24px; border: 1px solid var(--dsw-alias-border-l3); border-radius: 20px; background: var(--dsw-alias-bg-module-platform, #29292c); color: var(--dsw-alias-label-primary); box-shadow: var(--dsw-elevation-prominent); font: inherit; }
+        .dsh-codex-settings-dialog { width: 760px; font-size: 14px; line-height: 1.5; }
+
+        .dsh-codex-settings-dialog p { margin: 12px 0; }
+        .dsh-codex-settings-dialog th, .dsh-codex-settings-dialog td { padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l3, #555); }
+        .dsh-codex-settings-dialog select, .dsh-codex-settings-dialog button { font: inherit; color: inherit; background: var(--dsw-alias-bg-module-platform, #29292c); border: 1px solid var(--dsw-alias-border-l3, #555); border-radius: 6px; padding: 5px 9px; }
+        .dsh-codex-settings-dialog button.dsh-codex-fast, button.dsh-codex-fast { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px; padding: 5px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-primary, #ddd); cursor: pointer; }
+        .dsh-codex-settings-dialog button.dsh-codex-fast:hover, button.dsh-codex-fast:hover { border-color: var(--dsw-alias-border-l3, #777); }
+        button.dsh-codex-fast:focus-visible { outline: 2px solid var(--dsw-alias-label-link, #a99aff); outline-offset: 2px; }
+        button.dsh-codex-fast:disabled { opacity: .5; cursor: default; }
+        .dsh-codex-fast-menu { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 12px; font-size: 13px; }
+        .dsh-codex-settings-dialog button.dsh-experimental-mark { margin-left: 6px; padding: 2px 5px; color: var(--dsw-alias-state-warning-primary, #eab308); background: transparent; border: 0; cursor: pointer; }
+        .dsh-experimental-popup { position: fixed; inset: auto; left: clamp(8px, anchor(left), calc(100vw - min(17rem, 90vw) - 8px)); bottom: calc(anchor(top) + 4px); width: max-content; max-width: min(17rem, 90vw); box-sizing: border-box; margin: 0; padding: 6px 10px; border: 1px solid var(--dsw-alias-border-l3, #555); border-radius: 7px; background: var(--dsw-alias-bg-module-platform, #29292c); color: var(--dsw-alias-label-primary, #eee); font-size: 13px; }
         .dsh-reset-dialog::backdrop { background: #0008; }
         .dsh-reset-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
         .dsh-reset-dialog h2 { margin: 0; font-size: 20px; line-height: 1.3; }
@@ -379,6 +511,10 @@ window.__ModuleLoader__.load({ id: 'dsh-chatgpt-codex', factory: require => {
       name: 'settings.models.provider-card', id: 'chatgpt-codex', key: 'chatgpt-codex',
       inject: () => ({ send, language: (document.documentElement.lang || navigator.language).startsWith('ru') ? 'ru' : 'en' })
     }, Panel));
+    ctx.inject(['modelDirectories'], scope => scope.slots.inject('conversation.input.model.options', () => scope.slots.register({
+      name: 'conversation.input.model.options', id: 'chatgpt-codex-fast',
+      inject: sessionId => ({ directory: scope.modelDirectories.directoryFor(sessionId).store, send, language: (document.documentElement.lang || navigator.language).startsWith('ru') ? 'ru' : 'en' })
+    }, FastMenu)));
     ctx.inject(['modelDirectories'], scope => scope.slots.inject('conversation.composer.dock', () => scope.slots.register({
       name: 'conversation.composer.dock', id: 'chatgpt-codex-quota', order: 2,
       inject: sessionId => ({ directory: scope.modelDirectories.directoryFor(sessionId).store, send, language: (document.documentElement.lang || navigator.language).startsWith('ru') ? 'ru' : 'en' })

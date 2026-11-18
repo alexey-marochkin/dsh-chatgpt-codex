@@ -1,9 +1,12 @@
+import { withExperimentalModels, catalogRows, speedProvider } from '../catalog.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { credentialStore, selectModels, beginLogin } from '../core.js';
+import { createCatalogCache } from '../catalog-cache.js';
+import { createResetWarnings } from '../reset-warnings.js';
 
 // Подменяет внешние сервисы, сохраняя реальную оркестрацию входа и записи credentials.
 async function setup(savedLimits = false) {
@@ -13,7 +16,7 @@ async function setup(savedLimits = false) {
   const quota = { async reset() { resets++; }, async dispose() {} };
   const provider = { getModels: () => [], auth: { oauth: { login: () => { logins++; return new Promise((resolve, fail) => { finish = resolve; reject = fail; }); } } } };
   const context = {
-    credentialStore, selectModels, beginLogin, randomUUID, AbortController, AbortSignal, setTimeout, clearTimeout, URL, Response,
+    withExperimentalModels, catalogRows, speedProvider, credentialStore, selectModels, beginLogin, createCatalogCache, createResetWarnings, randomUUID, AbortController, AbortSignal, setTimeout, clearTimeout, URL, Response,
     credentialKey: (provider, key) => `${provider}/${key}`,
     openaiCodexProvider: () => provider, createQuota: async () => quota, createResets: () => ({ cancel: async () => {} }),
     createModels: () => ({ setProvider() {}, getAuth: async () => ({ auth: { apiKey: 'model-token' } }) }),
@@ -23,7 +26,7 @@ async function setup(savedLimits = false) {
   const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/^export const Config =.*;\r?\n/gm, '').replace(/export /g, '');
   vm.runInNewContext(source + '\nthis.run = apply;', context);
   await context.run({
-    get() {}, on() {}, emit() {}, effect() {},
+    get() {}, on() {}, emit() {}, effect() {}, inject() {},
     credentials: { readRecord: async key => records.get(key), modifyRecord: async (key, mutate) => { const next = await mutate(records.get(key)); if (next !== undefined) records.set(key, next); return records.get(key); }, deleteRecord: async key => records.delete(key) },
     llm: { registerConfigurableProviders() {}, registerAdapter() {} },
     connection: { fetch: { register: route => routes.set(route.path, route) } }
